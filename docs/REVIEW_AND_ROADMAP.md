@@ -12,7 +12,7 @@
 - **Không có Spark Structured Streaming**; chỉ có 1 job batch, và job này ghi `append` vào bảng `MergeTree` → chạy lại là nhân đôi dữ liệu.
 - Lỗi mất dữ liệu: collector ghi file local **trước** khi gửi Kafka; nếu Kafka lỗi, bản ghi bị đánh dấu "đã có" và **không bao giờ được gửi lại** (`data-pipeline/collector/main.py:48-55`).
 - Hợp đồng dữ liệu chỉ tồn tại ngầm trong `collector/models.py`; `raw-sink`, Spark và ClickHouse mỗi nơi tự giả định tên trường → cần chốt schema dùng chung **trước tiên**.
-- PR đang mở ở `data-pipeline` (nhánh `fix/data-pipeline`) đã **bị thay thế** bởi commit `a7a0df4` trên `main` và đang xung đột → đề xuất đóng.
+- PR `data-pipeline#3` (nhánh `fix/data-pipeline`) đã **bị thay thế** bởi commit `a7a0df4` trên `main` và đang xung đột → đề xuất đóng.
 - Ưu tiên tiếp theo: (M0) chốt hợp đồng + quy trình → (M1–M3 song song) ingestion tin cậy, raw zone MinIO, Spark → ClickHouse → (M4–M5) API + Dashboard → (M6) kiểm thử E2E, đo độ trễ, demo.
 
 ## 2. Bảng hiện trạng
@@ -65,8 +65,8 @@ Ký hiệu: ✅ Xong · 🟡 Dở · ⬜ Chưa có · 🔴 Có vấn đề
 
 ### 2.2 Issue và PR đang mở
 
-- **Không xem được trực tiếp**: máy chưa cài `gh` và repo là private (GitHub API trả 404 khi không xác thực). Số hiệu và nội dung issue **chưa xác minh** — cần một thành viên cài `gh` (`winget install GitHub.cli`, `gh auth login`) để bổ sung.
-- **PR từ nhánh `fix/data-pipeline`** (commit `9b43c50`, tutruong272005, 2026-10-24, "fix: skip unclosed candles and normalize RSS timestamps"), suy ra từ nhánh remote:
+- **Issue `data-pipeline#2`** "chưa làm xử lí dữ liệu = spark" (hungdi272005-cmd, 2026-10-23, không mô tả, không assignee): đúng với hiện trạng — chưa có Spark Structured Streaming và job batch còn lỗi (C2, C3, H1). Đề xuất bổ sung mô tả theo task M3.1–M3.5, gán cho vai trò B, và chuyển issue sang repo `infrastructure` (nơi chứa `spark/jobs/`) hoặc liên kết chéo.
+- **PR `data-pipeline#3`** từ nhánh `fix/data-pipeline` (commit `9b43c50`, tutruong272005, 2026-10-24, "fix: skip unclosed candles and normalize RSS timestamps"):
   - Thay đổi: lọc nến chưa đóng bằng `row[6] < now_ms`, chuẩn hóa ngày RSS `-0000` về UTC, thêm 2 test.
   - Đánh giá: hướng sửa đúng, test pass trên nhánh (5/5). Tuy nhiên **cả hai thay đổi đã có trên `main`** dưới dạng tổng quát hơn (`collectors.py:102-119` `_closed_klines`, `collectors.py:173-178` `_parse_pub_date`, `now_ms` inject được để test ổn định), và nhánh **xung đột** với `main` (`git merge-tree` báo conflict). Test trong PR phụ thuộc đồng hồ thật nên có thể flaky.
   - Đề xuất: **đóng PR**, ghi chú "superseded by a7a0df4", ghi nhận đóng góp; nếu muốn giữ test RSS `-0000` thì kiểm tra `tests/test_collectors.py` trên `main` đã có tương đương chưa.
@@ -325,4 +325,4 @@ Tuần 8   M6 cả nhóm
 7. **Q7 — Stack backend/frontend**: FastAPI + React/Vite + lightweight-charts có phù hợp kỹ năng nhóm không?
 8. **Q8 — Hợp đồng đặt ở đâu**: `infrastructure/contracts/` (đề xuất) hay tạo repo `contracts` riêng / git submodule?
 9. **Q9 — Máy demo**: máy nào chạy đủ stack (RAM ≥ 16 GB)? Có cần profile rút gọn cho máy 8 GB?
-10. **Q10 — Issue đang mở ở `data-pipeline`**: chưa xem được do thiếu `gh`/quyền; cần người có quyền đối chiếu issue với các task ở mục 5.
+10. **Q10 — Issue `data-pipeline#2` (Spark)**: chuyển sang repo `infrastructure` hay giữ nguyên và liên kết chéo? Ai (vai trò B) nhận?
