@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CryptoIntelligenceSystem/infrastructure/contracts/v1/raw_record.schema.json",
+  "title": "raw_record v1",
+  "description": "One line of the raw zone in MinIO (s3a://raw-data/{market,news}/year=YYYY/month=M/day=D/*.json). The Kafka value is kept verbatim as a string so malformed messages are preserved too. year/month/day are directory partitions, not fields.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["topic", "partition", "offset", "kafka_timestamp", "key", "value", "ingested_at"],
+  "properties": {
+    "topic": { "enum": ["market_data", "news_data"] },
+    "partition": { "type": "integer", "minimum": 0 },
+    "offset": { "type": "integer", "minimum": 0 },
+    "kafka_timestamp": { "$ref": "#/$defs/utc_ms" },
+    "key": { "type": ["string", "null"] },
+    "value": { "type": "string", "description": "Original Kafka value (UTF-8 JSON text of market_kline or news_article)." },
+    "ingested_at": { "$ref": "#/$defs/utc_ms", "description": "When Spark processed the micro-batch." }
+  },
+  "$defs": {
+    "utc_ms": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    }
+  }
+}
