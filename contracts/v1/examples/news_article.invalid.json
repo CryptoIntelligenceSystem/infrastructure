@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "data_type": "news",
+  "source": "coindesk",
+  "article_id": "not-a-hash",
+  "title": "Bitcoin example headline",
+  "summary": "Plain text summary.",
+  "url": "https://www.coindesk.com/markets/2026/10/27/bitcoin-example-article",
+  "published_at": "Mon, 27 Oct 2026 07:45:12 GMT",
+  "collected_at": "2026-10-27T08:00:05.120Z",
+  "symbols": [
+    "BTCUSDT"
+  ],
+  "sentiment": null
+}
