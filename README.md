@@ -1,105 +1,119 @@
 # Infrastructure
 
-Docker Compose cho pipeline dữ liệu gồm Kafka, MinIO, ClickHouse và Spark. Hợp đồng dữ liệu chung nằm trong [`contracts/`](contracts/README.md).
-
-## Yêu cầu: clone 4 repo cạnh nhau
-
-Code các Spark job nằm trong repo `data-pipeline` và được mount vào container Spark. Mặc định compose tìm repo đó ở `../data-pipeline`:
-
-```text
-<thư-mục-cha>/
-  data-pipeline/
-  infrastructure/        <- chạy docker compose ở đây
-  backend-api/
-  frontend-dashboard/
-```
-
-Nếu để chỗ khác, đặt `PIPELINE_REPO_DIR` trong `.env` (đường dẫn tương đối tính từ thư mục `infrastructure`).
+Docker Compose cho pipeline dữ liệu gồm Kafka, MinIO, ClickHouse và Spark.
 
 ## Khởi động
 
 ```powershell
-Copy-Item .env.example .env      # đổi mật khẩu; MINIO_ROOT_PASSWORD không chứa @ : /
-docker compose up -d --build
+Copy-Item .env.example .env
+docker compose up -d
+```
+
+Kiểm tra trạng thái:
+
+```powershell
+docker compose ps
+docker compose logs kafka-init
+```
+
+Kafka chỉ mở cho máy host tại `localhost:9092`. Hai topic được tạo tự động:
+
+- `market_data`
+- `news_data`
+
+MinIO:
+
+- API: `http://localhost:9000`
+- Console: `http://localhost:9001`
+- Đăng nhập bằng `MINIO_ROOT_USER` và `MINIO_ROOT_PASSWORD` trong `.env`.
+
+ClickHouse:
+
+- HTTP: `http://localhost:8123`
+- Native client: `localhost:9003`
+- Database: `pipeline`
+
+Spark:
+
+- Master UI: `http://localhost:8080`
+- Worker UI: `http://localhost:8081`
+- Master URL trong Docker: `spark://spark-master:7077`
+- Job mẫu nằm trong `spark/jobs/`.
+
+Trong cùng network Docker, các service phải dùng tên service để kết nối:
+
+- MinIO S3 API: `http://minio:9000`
+- Kafka: `kafka:29092`
+- ClickHouse HTTP/JDBC: `clickhouse:8123`
+
+Các bảng được khởi tạo tự động từ `clickhouse/init/001_schema.sql`:
+
+- `pipeline.market_data`
+- `pipeline.news_data`
+- `pipeline.analysis_results`
+
+Raw sink:
+
+- `raw-sink` đọc hai Kafka topic `market_data` và `news_data`.
+- Service tự tạo bucket `raw-data` nếu bucket chưa tồn tại.
+- Market được lưu theo `market/YYYY/MM/DD/`.
+- News được lưu theo `news/YYYY/MM/DD/`.
+- Tên object chứa khóa bản ghi nên chạy lại message sẽ ghi đè đúng object, không tạo bản sao.
+
+Spark job mẫu:
+
+- Đọc raw market JSON từ `s3a://raw-data/market/`.
+- Gom nến 1 phút thành nến 5 phút và tính MA20.
+- Ghi kết quả vào bảng `pipeline.analysis_results` bằng ClickHouse JDBC.
+- S3A, Kafka connector và ClickHouse JDBC được nạp khi chạy `spark-submit` qua Maven packages.
+
+Khởi động Spark:
+
+```powershell
+docker compose up -d spark-master spark-worker
 docker compose ps
 ```
 
-Thứ tự khởi động (compose tự xử lý qua `depends_on`):
-
-1. `kafka` → `kafka-init` tạo topic `market_data`, `news_data`
-2. `minio` → `mc-init` tạo bucket `raw-data`, `checkpoints`
-3. `clickhouse` (lần đầu chạy `clickhouse/init/*.sql`)
-4. `spark-master` (chờ Kafka healthy, `mc-init` xong) → `spark-worker`
-5. Collector (`data-pipeline`) gửi dữ liệu vào Kafka
-6. Submit các Spark job từ repo `data-pipeline` (xem README của repo đó): streaming trước (`raw_to_minio`, `market_to_clickhouse`, `volume_anomaly`), batch sau (`batch_ohlcv_5m`, `batch_indicators`)
-
-## Migration ClickHouse
-
-`clickhouse/init/` chỉ được ClickHouse chạy khi volume **còn trống**. Với database đã có dữ liệu, áp dụng các thay đổi schema bằng:
+Chạy job mẫu sau khi collector đã gửi dữ liệu vào Kafka và raw-sink đã ghi vào MinIO:
 
 ```powershell
-./scripts/migrate_clickhouse.ps1      # hoặc: bash scripts/migrate_clickhouse.sh
+docker compose exec -T spark-worker `
+  /opt/spark/bin/spark-submit `
+  --master spark://spark-master:7077 `
+  --conf spark.jars.ivy=/tmp/.ivy2 `
+  --packages org.apache.hadoop:hadoop-aws:3.3.4,com.clickhouse:clickhouse-jdbc:0.8.1 `
+  /opt/spark/jobs/batch_market_analysis.py
 ```
 
-Script chạy lần lượt mọi `clickhouse/init/*.sql`; các câu lệnh đều là `CREATE ... IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS` nên chạy lại nhiều lần không sao và không xóa dữ liệu.
+Nếu cần đọc Kafka trực tiếp bằng Spark Structured Streaming, thêm package:
 
-Bảng trong database `pipeline`:
+```text
+org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.9
+```
 
-| Bảng | Engine / ORDER BY | Ghi bởi |
-|---|---|---|
-| `market_data` | `ReplacingMergeTree(collected_at)` / `(symbol, interval, open_time)` | Spark `market_to_clickhouse` |
-| `market_data_rejects` | `ReplacingMergeTree(rejected_at)` / `(topic, partition, offset)` | Spark `market_to_clickhouse` (dead-letter) |
-| `candles_5m` | `ReplacingMergeTree(processed_at)` / `(symbol, interval, open_time)` | Spark `batch_ohlcv_5m` |
-| `indicators` | `ReplacingMergeTree(processed_at)` / `(symbol, interval, name, open_time)` | Spark `batch_indicators` |
-| `signals` | `ReplacingMergeTree(detected_at)` / `(symbol, signal_type, open_time)` | Spark `volume_anomaly` |
-| `news_data` | `ReplacingMergeTree(collected_at)` / `(source, article_id)` | (chưa có job) |
-| `analysis_results` | `MergeTree` | không còn job nào ghi; giữ lại, không xóa |
-
-Đọc bảng `ReplacingMergeTree` luôn dùng `FINAL` để gộp các bản ghi lặp do chạy lại.
-
-## Dịch vụ và cổng
-
-| Dịch vụ | Cổng host | Ghi chú |
-|---|---|---|
-| Kafka | `9092` | trong Docker: `kafka:29092` |
-| MinIO API / Console | `9000` / `9001` | đăng nhập bằng `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` |
-| ClickHouse HTTP / native | `8123` / `9003` | database `pipeline` |
-| Spark master | `7077`, UI `8080` | |
-| Spark worker UI | `8081` | |
-| Spark UI của job đang chạy | `4040`–`4043` | job submit đầu tiên ở `4040`, job tiếp theo `4041`, ... |
-
-## Spark
-
-- Image `spark/Dockerfile`: `apache/spark:3.5.9-scala2.12-java17-python3-ubuntu`, đã **bake sẵn** connector (không cần `--packages`, không cần mạng khi submit):
-
-  | Jar | Phiên bản | Lý do |
-  |---|---|---|
-  | `spark-sql-kafka-0-10_2.12`, `spark-token-provider-kafka-0-10_2.12` | 3.5.9 | = Spark |
-  | `kafka-clients` | 3.4.1 | Spark 3.5.9 build với Kafka 3.4.1 |
-  | `commons-pool2` | 2.11.1 | phụ thuộc của Kafka connector |
-  | `hadoop-aws` | 3.3.4 | = Hadoop trong image (build kiểm tra `hadoop-client-api-3.3.4.jar`) |
-  | `aws-java-sdk-bundle` | 1.12.262 | bản `hadoop-aws` 3.3.4 yêu cầu |
-  | `clickhouse-jdbc` (`-all`) | 0.8.1 | driver `com.clickhouse.jdbc.ClickHouseDriver` (đổi bằng `CLICKHOUSE_JDBC_DRIVER`) |
-
-- `spark/conf/spark-defaults.conf` được mount vào `/opt/spark/conf/`: múi giờ UTC (`spark.sql.session.timeZone`, `-Duser.timezone=UTC`), S3A path-style cho MinIO, mỗi job mặc định `spark.cores.max=1`, executor 640 MB.
-- Tài nguyên (đổi trong `.env`): worker cung cấp 4 core / 3 GB cho job, giới hạn container 4 GB / 4 CPU; master giới hạn 3 GB / 2 CPU vì driver của các job chạy trong container master. Đủ cho 3 job streaming + 1 job batch cùng lúc.
-- Spark UI: master `http://localhost:8080` (danh sách job), worker `http://localhost:8081`, từng job `http://localhost:4040`… (tab *Structured Streaming* xem tốc độ xử lý, độ trễ batch).
-
-## Raw sink cũ
-
-`raw-sink` (Python) được thay bằng Spark job `raw_to_minio` và chuyển sang profile `legacy`, không chạy mặc định. Chỉ bật khi cần so sánh:
+Khởi động hoặc build lại raw sink sau khi sửa code:
 
 ```powershell
-docker compose --profile legacy up -d raw-sink
+docker compose up -d --build raw-sink
+docker compose logs -f raw-sink
 ```
 
-Không chạy song song với `raw_to_minio` vì hai bên sẽ ghi trùng dữ liệu thô.
-
-## Dừng / reset
+Truy vấn thử ClickHouse:
 
 ```powershell
-docker compose stop          # dừng, giữ dữ liệu
-docker compose down -v       # XÓA toàn bộ volume dữ liệu — chỉ khi chắc chắn muốn reset
+curl "http://localhost:8123/?database=pipeline&query=SHOW%20TABLES"
 ```
 
-Không commit `.env`; mật khẩu trong `.env.example` chỉ là giá trị mẫu.
+Dừng dịch vụ nhưng giữ dữ liệu:
+
+```powershell
+docker compose stop
+```
+
+Xóa container và volume dữ liệu chỉ khi muốn reset toàn bộ môi trường:
+
+```powershell
+docker compose down -v
+```
+
+Không commit `.env`; mật khẩu trong `.env.example` chỉ là giá trị mẫu và cần đổi trước khi dùng chung.

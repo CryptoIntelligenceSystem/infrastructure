@@ -1,31 +1,3 @@
-x-spark-common: &spark-common
-  build: ./spark
-  restart: unless-stopped
-  environment:
-    SPARK_NO_DAEMONIZE: "true"
-    HOME: /tmp
-    SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-4}
-    SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-3g}
-    # Spark job code lives in the data-pipeline repo, mounted read-only below.
-    PYTHONPATH: /opt/pipeline
-    KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-    KAFKA_MARKET_TOPIC: market_data
-    KAFKA_NEWS_TOPIC: news_data
-    MINIO_ENDPOINT: http://minio:9000
-    MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
-    MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-    MINIO_RAW_BUCKET: ${MINIO_RAW_BUCKET:-raw-data}
-    MINIO_CHECKPOINT_BUCKET: ${MINIO_CHECKPOINT_BUCKET:-checkpoints}
-    CLICKHOUSE_JDBC_URL: jdbc:clickhouse://clickhouse:8123/${CLICKHOUSE_DB}
-    CLICKHOUSE_JDBC_DRIVER: ${CLICKHOUSE_JDBC_DRIVER:-com.clickhouse.jdbc.ClickHouseDriver}
-    CLICKHOUSE_DB: ${CLICKHOUSE_DB}
-    CLICKHOUSE_USER: ${CLICKHOUSE_USER}
-    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
-  volumes:
-    # Requires the repos to be cloned side by side (../data-pipeline), or set PIPELINE_REPO_DIR.
-    - ${PIPELINE_REPO_DIR:-../data-pipeline}:/opt/pipeline:ro
-    - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
-
 services:
   kafka:
     image: apache/kafka:3.9.1
@@ -98,21 +70,7 @@ services:
       - clickhouse_logs:/var/log/clickhouse-server
       - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
 
-  mc-init:
-    # Creates the buckets Spark writes to. No shell in this image: credentials come from MC_HOST_local.
-    image: chainguard/minio-client:latest@sha256:778b2dac231584d5d5749ab663f9f61979d60dd5c00abf682af888db6a9f46e4
-    container_name: pipeline-mc-init
-    depends_on:
-      minio:
-        condition: service_started
-    environment:
-      MC_HOST_local: http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000
-    command: ["mb", "--ignore-existing", "local/${MINIO_RAW_BUCKET:-raw-data}", "local/${MINIO_CHECKPOINT_BUCKET:-checkpoints}"]
-    restart: on-failure:10
-
   raw-sink:
-    # Replaced by the Spark job raw_to_minio; kept for reference. Start with: docker compose --profile legacy up raw-sink
-    profiles: ["legacy"]
     build: ./raw-sink
     container_name: pipeline-raw-sink
     restart: unless-stopped
@@ -132,37 +90,61 @@ services:
       MINIO_BUCKET: raw-data
 
   spark-master:
-    <<: *spark-common
+    build: ./spark
     container_name: pipeline-spark-master
+    restart: unless-stopped
     hostname: spark-master
     depends_on:
+      minio:
+        condition: service_started
       kafka:
         condition: service_healthy
-      mc-init:
-        condition: service_completed_successfully
       clickhouse:
         condition: service_started
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      HOME: /tmp
+      IVY_HOME: /tmp/.ivy2
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      CLICKHOUSE_JDBC_URL: jdbc:clickhouse://clickhouse:8123/pipeline
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
     command: ["/opt/spark/sbin/start-master.sh"]
-    # Jobs are submitted from this container (client mode), so their drivers live here too.
-    mem_limit: ${SPARK_MASTER_MEM_LIMIT:-3g}
-    cpus: ${SPARK_MASTER_CPUS:-2}
     ports:
       - "7077:7077"
       - "8080:8080"
-      - "4040-4043:4040-4043"   # Spark UI of each running driver (first job 4040, next 4041, ...)
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs:ro
+      - ./spark/conf:/opt/spark/conf/custom:ro
 
   spark-worker:
-    <<: *spark-common
+    build: ./spark
     container_name: pipeline-spark-worker
+    restart: unless-stopped
     hostname: spark-worker
     depends_on:
       spark-master:
         condition: service_started
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      HOME: /tmp
+      IVY_HOME: /tmp/.ivy2
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-2}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-2g}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      CLICKHOUSE_JDBC_URL: jdbc:clickhouse://clickhouse:8123/pipeline
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
     command: ["/opt/spark/sbin/start-worker.sh", "spark://spark-master:7077"]
-    mem_limit: ${SPARK_WORKER_MEM_LIMIT:-4g}
-    cpus: ${SPARK_WORKER_CPUS:-4}
     ports:
       - "8081:8081"
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs:ro
+      - ./spark/conf:/opt/spark/conf/custom:ro
 
 volumes:
   kafka_data:
