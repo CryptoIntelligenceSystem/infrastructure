@@ -30,8 +30,23 @@ Thứ tự khởi động (compose tự xử lý qua `depends_on`):
 2. `minio` → `mc-init` tạo bucket `raw-data`, `checkpoints`
 3. `clickhouse` (lần đầu chạy `clickhouse/init/*.sql`)
 4. `spark-master` (chờ Kafka healthy, `mc-init` xong) → `spark-worker`
-5. Collector (`data-pipeline`) gửi dữ liệu vào Kafka
+5. `collector` lấy dữ liệu Binance/CoinDesk liên tục và gửi dữ liệu vào Kafka
 6. Submit các Spark job từ repo `data-pipeline` (xem README của repo đó): streaming trước (`raw_to_minio`, `market_to_clickhouse`, `volume_anomaly`), batch sau (`batch_ohlcv_5m`, `batch_indicators`)
+
+Collector được build từ repo `data-pipeline` và chạy trong container `pipeline-collector`.
+Thư mục `data-pipeline/data` được mount vào container để giữ dữ liệu đã thu thập và trạng thái
+deduplicate sau khi container khởi động lại. Khi sửa code Collector, build lại service:
+
+```powershell
+docker compose up -d --build collector
+docker compose logs -f collector
+```
+
+Dừng riêng Collector:
+
+```powershell
+docker compose stop collector
+```
 
 ## Migration ClickHouse
 
@@ -49,10 +64,11 @@ Bảng trong database `pipeline`:
 |---|---|---|
 | `market_data` | `ReplacingMergeTree(collected_at)` / `(symbol, interval, open_time)` | Spark `market_to_clickhouse` |
 | `market_data_rejects` | `ReplacingMergeTree(rejected_at)` / `(topic, partition, offset)` | Spark `market_to_clickhouse` (dead-letter) |
+| `news_data_rejects` | `ReplacingMergeTree(rejected_at)` / `(topic, partition, offset)` | Spark `news_to_clickhouse` (dead-letter) |
 | `candles_5m` | `ReplacingMergeTree(processed_at)` / `(symbol, interval, open_time)` | Spark `batch_ohlcv_5m` |
 | `indicators` | `ReplacingMergeTree(processed_at)` / `(symbol, interval, name, open_time)` | Spark `batch_indicators` |
 | `signals` | `ReplacingMergeTree(detected_at)` / `(symbol, signal_type, open_time)` | Spark `volume_anomaly` |
-| `news_data` | `ReplacingMergeTree(collected_at)` / `(source, article_id)` | (chưa có job) |
+| `news_data` | `ReplacingMergeTree(collected_at)` / `(source, article_id)` | Spark `news_to_clickhouse` |
 | `analysis_results` | `MergeTree` | không còn job nào ghi; giữ lại, không xóa |
 
 Đọc bảng `ReplacingMergeTree` luôn dùng `FINAL` để gộp các bản ghi lặp do chạy lại.
@@ -62,6 +78,7 @@ Bảng trong database `pipeline`:
 | Dịch vụ | Cổng host | Ghi chú |
 |---|---|---|
 | Kafka | `9092` | trong Docker: `kafka:29092` |
+| Collector | — | chạy liên tục, log bằng `docker compose logs -f collector` |
 | MinIO API / Console | `9000` / `9001` | đăng nhập bằng `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` |
 | ClickHouse HTTP / native | `8123` / `9003` | database `pipeline` |
 | Spark master | `7077`, UI `8080` | |

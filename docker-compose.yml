@@ -68,6 +68,42 @@ services:
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --list
     restart: "no"
 
+  collector:
+    # Build the collector code from the sibling data-pipeline repository.
+    build:
+      context: ${PIPELINE_REPO_DIR:-../data-pipeline}
+      dockerfile_inline: |
+        FROM python:3.13-slim
+        WORKDIR /app
+        ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+        COPY requirements.txt .
+        RUN pip install --no-cache-dir -r requirements.txt
+        COPY collector ./collector
+        CMD ["python", "-m", "collector", "--source", "all"]
+    container_name: pipeline-collector
+    restart: unless-stopped
+    init: true
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      BINANCE_FUTURES_BASE_URL: ${BINANCE_FUTURES_BASE_URL:-https://fapi.binance.com}
+      BINANCE_SYMBOLS: ${BINANCE_SYMBOLS:-BTCUSDT,ETHUSDT}
+      BINANCE_INTERVAL: ${BINANCE_INTERVAL:-1m}
+      BINANCE_LIMIT: ${BINANCE_LIMIT:-100}
+      BINANCE_HISTORY_LIMIT: ${BINANCE_HISTORY_LIMIT:-1000}
+      COINDESK_RSS_URL: ${COINDESK_RSS_URL:-https://www.coindesk.com/arc/outboundfeeds/rss/}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_MARKET_TOPIC: ${KAFKA_MARKET_TOPIC:-market_data}
+      KAFKA_NEWS_TOPIC: ${KAFKA_NEWS_TOPIC:-news_data}
+      COLLECTOR_OUTPUT_DIR: /app/data/samples
+      COLLECTOR_POLL_SECONDS: ${COLLECTOR_POLL_SECONDS:-60}
+    volumes:
+      # Keep the local deduplication store across container restarts.
+      - ${PIPELINE_REPO_DIR:-../data-pipeline}/data:/app/data
+
   minio:
     image: cgr.dev/chainguard/minio:latest
     container_name: pipeline-minio

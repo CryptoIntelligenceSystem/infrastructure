@@ -9,6 +9,22 @@
 ALTER TABLE pipeline.market_data
     ADD COLUMN IF NOT EXISTS processed_at Nullable(DateTime64(3, 'UTC'));
 
+-- Dead letter for news_data messages that fail contract validation.
+CREATE TABLE IF NOT EXISTS pipeline.news_data_rejects
+(
+    topic LowCardinality(String),
+    partition Int32,
+    offset Int64,
+    kafka_timestamp DateTime64(3, 'UTC'),
+    key Nullable(String),
+    raw_value String,
+    errors String,              -- "; "-separated validation errors
+    rejected_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(rejected_at)
+PARTITION BY toYYYYMM(kafka_timestamp)
+ORDER BY (topic, partition, offset);
+
 -- Dead letter for market_data messages that fail contract validation.
 CREATE TABLE IF NOT EXISTS pipeline.market_data_rejects
 (
