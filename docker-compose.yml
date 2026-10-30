@@ -98,6 +98,25 @@ services:
       - clickhouse_logs:/var/log/clickhouse-server
       - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
 
+  backend:
+    build:
+      context: ../backend-api
+      dockerfile: Dockerfile
+    container_name: pipeline-backend
+    restart: unless-stopped
+    depends_on:
+      clickhouse:
+        condition: service_started
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:5080
+      ClickHouse__BaseUrl: http://clickhouse:8123
+      ClickHouse__Database: ${CLICKHOUSE_DB}
+      ClickHouse__Username: ${CLICKHOUSE_USER}
+      ClickHouse__Password: ${CLICKHOUSE_PASSWORD}
+    ports:
+      - "5080:5080"
+
   mc-init:
     # Creates the buckets Spark writes to. No shell in this image: credentials come from MC_HOST_local.
     image: chainguard/minio-client:latest@sha256:778b2dac231584d5d5749ab663f9f61979d60dd5c00abf682af888db6a9f46e4
