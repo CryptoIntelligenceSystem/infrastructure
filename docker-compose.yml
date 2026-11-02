@@ -17,6 +17,7 @@ x-spark-common: &spark-common
     MINIO_RAW_BUCKET: ${MINIO_RAW_BUCKET:-raw-data}
     MINIO_CHECKPOINT_BUCKET: ${MINIO_CHECKPOINT_BUCKET:-checkpoints}
     CLICKHOUSE_JDBC_URL: jdbc:clickhouse://clickhouse:8123/${CLICKHOUSE_DB}
+    CLICKHOUSE_HTTP_URL: http://clickhouse:8123
     CLICKHOUSE_JDBC_DRIVER: ${CLICKHOUSE_JDBC_DRIVER:-com.clickhouse.jdbc.ClickHouseDriver}
     CLICKHOUSE_DB: ${CLICKHOUSE_DB}
     CLICKHOUSE_USER: ${CLICKHOUSE_USER}
