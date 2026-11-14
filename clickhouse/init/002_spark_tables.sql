@@ -91,3 +91,23 @@ PARTITION BY toYYYYMM(open_time)
 ORDER BY (symbol, signal_type, open_time);
 
 -- pipeline.analysis_results (001_schema.sql) is no longer written by any job. Kept, not dropped.
+
+-- Price movement after an article. Each horizon is observational, not causal.
+CREATE TABLE IF NOT EXISTS pipeline.news_impact
+(
+    source LowCardinality(String),
+    article_id String,
+    title String,
+    symbol LowCardinality(String),
+    published_at DateTime64(3, 'UTC'),
+    horizon_minutes UInt16,
+    baseline_time DateTime64(3, 'UTC'),
+    baseline_close Float64,
+    target_time DateTime64(3, 'UTC'),
+    target_close Float64,
+    return_pct Float64,
+    calculated_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(calculated_at)
+PARTITION BY toYYYYMM(published_at)
+ORDER BY (source, article_id, symbol, horizon_minutes);
