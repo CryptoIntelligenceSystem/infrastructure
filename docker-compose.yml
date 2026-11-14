@@ -1,27 +1,29 @@
+x-spark-environment: &spark-environment
+  SPARK_NO_DAEMONIZE: "true"
+  HOME: /tmp
+  SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-4}
+  SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-3g}
+  # Spark job code lives in the data-pipeline repo, mounted read-only below.
+  PYTHONPATH: /opt/pipeline
+  KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  KAFKA_MARKET_TOPIC: market_data
+  KAFKA_NEWS_TOPIC: news_data
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+  MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+  MINIO_RAW_BUCKET: ${MINIO_RAW_BUCKET:-raw-data}
+  MINIO_CHECKPOINT_BUCKET: ${MINIO_CHECKPOINT_BUCKET:-checkpoints}
+  CLICKHOUSE_JDBC_URL: jdbc:clickhouse://clickhouse:8123/${CLICKHOUSE_DB}
+  CLICKHOUSE_HTTP_URL: http://clickhouse:8123
+  CLICKHOUSE_JDBC_DRIVER: ${CLICKHOUSE_JDBC_DRIVER:-com.clickhouse.jdbc.ClickHouseDriver}
+  CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+  CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+
 x-spark-common: &spark-common
   build: ./spark
   restart: unless-stopped
-  environment:
-    SPARK_NO_DAEMONIZE: "true"
-    HOME: /tmp
-    SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-4}
-    SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-3g}
-    # Spark job code lives in the data-pipeline repo, mounted read-only below.
-    PYTHONPATH: /opt/pipeline
-    KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-    KAFKA_MARKET_TOPIC: market_data
-    KAFKA_NEWS_TOPIC: news_data
-    MINIO_ENDPOINT: http://minio:9000
-    MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
-    MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-    MINIO_RAW_BUCKET: ${MINIO_RAW_BUCKET:-raw-data}
-    MINIO_CHECKPOINT_BUCKET: ${MINIO_CHECKPOINT_BUCKET:-checkpoints}
-    CLICKHOUSE_JDBC_URL: jdbc:clickhouse://clickhouse:8123/${CLICKHOUSE_DB}
-    CLICKHOUSE_HTTP_URL: http://clickhouse:8123
-    CLICKHOUSE_JDBC_DRIVER: ${CLICKHOUSE_JDBC_DRIVER:-com.clickhouse.jdbc.ClickHouseDriver}
-    CLICKHOUSE_DB: ${CLICKHOUSE_DB}
-    CLICKHOUSE_USER: ${CLICKHOUSE_USER}
-    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+  environment: *spark-environment
   volumes:
     # Requires the repos to be cloned side by side (../data-pipeline), or set PIPELINE_REPO_DIR.
     - ${PIPELINE_REPO_DIR:-../data-pipeline}:/opt/pipeline:ro
@@ -80,7 +82,7 @@ services:
         COPY requirements.txt .
         RUN pip install --no-cache-dir -r requirements.txt
         COPY collector ./collector
-        CMD ["python", "-m", "collector", "--source", "all"]
+        CMD ["python", "-m", "collector", "--source", "all", "--send-kafka"]
     container_name: pipeline-collector
     restart: unless-stopped
     init: true
@@ -100,7 +102,7 @@ services:
       KAFKA_MARKET_TOPIC: ${KAFKA_MARKET_TOPIC:-market_data}
       KAFKA_NEWS_TOPIC: ${KAFKA_NEWS_TOPIC:-news_data}
       COLLECTOR_OUTPUT_DIR: /app/data/samples
-      COLLECTOR_POLL_SECONDS: ${COLLECTOR_POLL_SECONDS:-60}
+      COLLECTOR_POLL_SECONDS: ${COLLECTOR_POLL_SECONDS:-15}
     volumes:
       # Keep the local deduplication store across container restarts.
       - ${PIPELINE_REPO_DIR:-../data-pipeline}/data:/app/data
@@ -153,6 +155,18 @@ services:
       ClickHouse__Password: ${CLICKHOUSE_PASSWORD}
     ports:
       - "5080:5080"
+
+  frontend:
+    build:
+      context: ../frontend-dashboard
+      dockerfile: Dockerfile
+    container_name: pipeline-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "3000:80"
 
   mc-init:
     # Creates the buckets Spark writes to. No shell in this image: credentials come from MC_HOST_local.
@@ -219,6 +233,25 @@ services:
     cpus: ${SPARK_WORKER_CPUS:-4}
     ports:
       - "8081:8081"
+
+  spark-batch-worker:
+    # A separate worker guarantees that a batch job still has capacity while all four
+    # long-running streaming jobs consume the primary worker's cores.
+    <<: *spark-common
+    container_name: pipeline-spark-batch-worker
+    hostname: spark-batch-worker
+    environment:
+      <<: *spark-environment
+      SPARK_WORKER_CORES: ${SPARK_BATCH_WORKER_CORES:-2}
+      SPARK_WORKER_MEMORY: ${SPARK_BATCH_WORKER_MEMORY:-2g}
+    depends_on:
+      spark-master:
+        condition: service_started
+    command: ["/opt/spark/sbin/start-worker.sh", "spark://spark-master:7077"]
+    mem_limit: ${SPARK_BATCH_WORKER_MEM_LIMIT:-3g}
+    cpus: ${SPARK_BATCH_WORKER_CPUS:-2}
+    ports:
+      - "8082:8081"
 
 volumes:
   kafka_data:
